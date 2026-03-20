@@ -12,40 +12,63 @@ function formatTimestamp(date: Date): string {
   return `${y}${m}${d}-${h}${min}${sec}`;
 }
 
+export interface ErrorCapture {
+  screenshotPath: string;
+  htmlPath: string;
+}
+
+/**
+ * エラー発生時に PNG + HTML ソースをペアで保存する。
+ * 同一タイムスタンプのベース名を使うため、ファイル名で紐付けできる。
+ */
+export async function captureError(
+  page: Page,
+  dir: string,
+  prefix: string = 'error',
+  maxFiles: number = 50,
+): Promise<ErrorCapture> {
+  fs.mkdirSync(dir, { recursive: true });
+
+  const timestamp = formatTimestamp(new Date());
+  const base = `${prefix}-${timestamp}`;
+  const screenshotPath = path.resolve(dir, `${base}.png`);
+  const htmlPath = path.resolve(dir, `${base}.html`);
+
+  await page.screenshot({ path: screenshotPath, fullPage: false });
+
+  const html = await page.content().catch(() => '<!-- failed to capture HTML -->');
+  fs.writeFileSync(htmlPath, html, 'utf-8');
+
+  cleanupOldCaptures(dir, maxFiles);
+
+  return { screenshotPath, htmlPath };
+}
+
+/** 後方互換: PNG のみ取得したい場合 */
 export async function takeScreenshot(
   page: Page,
   dir: string,
   prefix: string = 'screenshot',
   maxFiles: number = 50,
 ): Promise<string> {
-  fs.mkdirSync(dir, { recursive: true });
-
-  const timestamp = formatTimestamp(new Date());
-  const filename = `${prefix}-${timestamp}.png`;
-  const fullPath = path.resolve(dir, filename);
-
-  await page.screenshot({ path: fullPath, fullPage: false });
-
-  cleanupOldScreenshots(dir, maxFiles);
-
-  return fullPath;
+  const { screenshotPath } = await captureError(page, dir, prefix, maxFiles);
+  return screenshotPath;
 }
 
-function cleanupOldScreenshots(dir: string, maxFiles: number): void {
+function cleanupOldCaptures(dir: string, maxFiles: number): void {
   try {
-    const files = fs
-      .readdirSync(dir)
-      .filter((f) => f.endsWith('.png'))
-      .map((f) => ({
-        name: f,
-        fullPath: path.join(dir, f),
-        mtime: fs.statSync(path.join(dir, f)).mtime.getTime(),
-      }))
-      .sort((a, b) => b.mtime - a.mtime);
+    // PNG と HTML を別々に maxFiles 件ずつ保持する
+    for (const ext of ['.png', '.html']) {
+      const files = fs
+        .readdirSync(dir)
+        .filter((f) => f.endsWith(ext))
+        .map((f) => ({
+          fullPath: path.join(dir, f),
+          mtime: fs.statSync(path.join(dir, f)).mtime.getTime(),
+        }))
+        .sort((a, b) => b.mtime - a.mtime);
 
-    if (files.length > maxFiles) {
-      const toDelete = files.slice(maxFiles);
-      for (const file of toDelete) {
+      for (const file of files.slice(maxFiles)) {
         fs.unlinkSync(file.fullPath);
       }
     }

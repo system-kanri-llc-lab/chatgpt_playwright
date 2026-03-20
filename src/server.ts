@@ -14,7 +14,7 @@ import { ChatGPTPage } from './pages/chatgpt-page.js';
 import { classifyError } from './errors/error-classifier.js';
 import { Logger } from './utils/logger.js';
 import { loadConfig } from './utils/config.js';
-import { takeScreenshot } from './utils/screenshot.js';
+import { captureError } from './utils/screenshot.js';
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 const logger = new Logger();
@@ -79,6 +79,7 @@ async function handleSend(
   ).catch(async (error: unknown) => {
     const classified = classifyError(error);
     let screenshotPath: string | null = null;
+    let htmlPath: string | null = null;
     let pageUrl = '';
     let pageTitle = '';
     let failedSelector = '';
@@ -89,7 +90,9 @@ async function handleSend(
         const page = await browserManager.getPage();
         pageUrl = page.url();
         pageTitle = await page.title();
-        screenshotPath = await takeScreenshot(page, config.screenshots.dir, 'error', config.screenshots.maxFiles);
+        const capture = await captureError(page, config.screenshots.dir, 'error', config.screenshots.maxFiles);
+        screenshotPath = capture.screenshotPath;
+        htmlPath = capture.htmlPath;
       }
     } catch { /* best-effort */ }
 
@@ -102,6 +105,7 @@ async function handleSend(
       error_type: classified.errorType,
       message: classified.message,
       screenshot_path: screenshotPath,
+      html_path: htmlPath,
       recovery_attempted: false,
       context: { page_url: pageUrl, page_title: pageTitle, failed_selector: failedSelector },
       _exitCode: classified.exitCode,

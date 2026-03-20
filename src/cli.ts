@@ -5,7 +5,7 @@ import { sendPromptAction } from './actions/send-prompt.js';
 import { BrowserManager } from './browser-manager.js';
 import { ChatGPTPage } from './pages/chatgpt-page.js';
 import { classifyError } from './errors/error-classifier.js';
-import { takeScreenshot } from './utils/screenshot.js';
+import { captureError } from './utils/screenshot.js';
 import { loadConfig } from './utils/config.js';
 import { Logger } from './utils/logger.js';
 
@@ -21,7 +21,7 @@ program
   .command('send')
   .description('Send a prompt to ChatGPT and print the response as JSON')
   .option('-p, --prompt <text>', 'The prompt text (use "-" to read from stdin)')
-  .option('-m, --model <model>', 'Model to use')
+  .option('-m, --model <model>', 'Model to use: instant | thinking | pro | deepresearch  (default: thinking)')
   .option('-t, --timeout <seconds>', 'Response timeout in seconds', parseFloat)
   .option('--no-new-chat', 'Do not start a new chat (reuse existing)')
   .option('--conversation-url <url>', 'Open a specific conversation URL')
@@ -82,21 +82,24 @@ program
       logger.error('cli.send', { error: classified });
 
       let screenshotPath: string | null = null;
+      let htmlPath: string | null = null;
       let pageUrl = '';
       let pageTitle = '';
       let failedSelector = '';
 
-      // Try to take error screenshot
+      // PNG + HTML をペアで保存
       try {
         const browserManager = BrowserManager.getInstance();
         if (browserManager.isRunning()) {
           const page = await browserManager.getPage();
           pageUrl = page.url();
           pageTitle = await page.title();
-          screenshotPath = await takeScreenshot(page, config.screenshots.dir, 'error', config.screenshots.maxFiles);
+          const capture = await captureError(page, config.screenshots.dir, 'error', config.screenshots.maxFiles);
+          screenshotPath = capture.screenshotPath;
+          htmlPath = capture.htmlPath;
         }
       } catch {
-        // Best-effort screenshot
+        // Best-effort capture
       }
 
       // Extract failed selector from error if available
@@ -109,6 +112,7 @@ program
         error_type: classified.errorType,
         message: classified.message,
         screenshot_path: screenshotPath,
+        html_path: htmlPath,
         recovery_attempted: false,
         context: {
           page_url: pageUrl,
@@ -230,10 +234,13 @@ program
       logger.error('cli.health', { error: classified });
 
       let screenshotPath: string | null = null;
+      let htmlPath: string | null = null;
       try {
         if (browserManager.isRunning()) {
           const page = await browserManager.getPage();
-          screenshotPath = await takeScreenshot(page, config.screenshots.dir, 'health-error', config.screenshots.maxFiles);
+          const capture = await captureError(page, config.screenshots.dir, 'health-error', config.screenshots.maxFiles);
+          screenshotPath = capture.screenshotPath;
+          htmlPath = capture.htmlPath;
         }
       } catch {
         // Best-effort
@@ -244,6 +251,7 @@ program
         error_type: classified.errorType,
         message: classified.message,
         screenshot_path: screenshotPath,
+        html_path: htmlPath,
       };
 
       process.stdout.write(JSON.stringify(result, null, 2) + '\n');

@@ -62,9 +62,8 @@ export async function sendPromptAction(options: SendPromptOptions): Promise<Send
   }
 
   // Step 7: Select model
-  if (effectiveModel) {
-    await chatgptPage.selectModel(effectiveModel);
-  }
+  // 前回チャットのモデルが引き継がれるため、未指定時も Thinking を明示選択する
+  await chatgptPage.selectModel(effectiveModel ?? 'thinking');
 
   // Step 8: Send prompt
   await chatgptPage.sendPrompt(prompt);

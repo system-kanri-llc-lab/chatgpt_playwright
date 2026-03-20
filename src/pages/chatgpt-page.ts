@@ -3,10 +3,35 @@ import { AuthExpiredError, CaptchaError, ResponseTimeoutError, SelectorNotFoundE
 import { loadConfig } from '../utils/config.js';
 import { Logger } from '../utils/logger.js';
 
+/**
+ * --model で指定できる正規名 → ChatGPT UI 上のラベル（部分一致）のマッピング。
+ * UI のテキストが変わった場合はここのみ修正する。
+ */
+export const MODEL_MAP: Record<string, string[]> = {
+  instant:      ['Instant', '4o mini', 'GPT-4o mini'],
+  thinking:     ['Thinking', 'o3-mini', 'o1'],
+  pro:          ['Pro', 'o3 pro', 'o3-pro'],
+  deepresearch: ['Deep research', 'DeepResearch', 'ディープリサーチ'],
+};
+
+/** --model に渡せる正規名 */
+export type ModelName = keyof typeof MODEL_MAP;
+
 const SELECTORS = {
   promptTextarea: '[data-testid="composer-input"], #prompt-textarea',
   sendButton: '[data-testid="send-button"]',
-  modelSelector: '[data-testid="model-selector"]',
+  /**
+   * ヘッダー上の「ChatGPT ▼」モデル選択ボタン。
+   * サイドバーの trailing button（__menu-item-trailing-btn / data-trailing-button）は除外する。
+   */
+  modelSelector: [
+    '[data-testid="model-selector"]',
+    '[data-testid="model-switcher-dropdown-button"]',
+    // サイドバーの trailing button を除外した aria-haspopup ボタン
+    'button[aria-haspopup="menu"]:not([data-trailing-button]):not([class*="trailing"])',
+  ].join(', '),
+  /** モデル選択モーダル（intelligence menu） */
+  modelMenu: '[data-testid="modal-intelligence-menu"], [role="menu"], [role="listbox"], [role="dialog"]',
   assistantMessage: '[data-message-author-role="assistant"]',
   streamingIndicator: '[data-testid="stop-button"]',
   /** ストリーミング接続中に現れる進捗テキスト（接続生存確認用・完了判定には使わない） */
@@ -75,22 +100,67 @@ export class ChatGPTPage {
   }
 
   async selectModel(model: string): Promise<void> {
-    this.logger.info('chatgptPage', { step: 'select_model', model });
-    const selector = this.page.locator(SELECTORS.modelSelector).first();
-    const visible = await selector.isVisible({ timeout: 5000 }).catch(() => false);
-    if (!visible) {
+    // 正規名（小文字）に正規化して UI ラベル候補を取得
+    const key = model.toLowerCase().replace(/[^a-z]/g, '') as keyof typeof MODEL_MAP;
+    const labels = MODEL_MAP[key] ?? [model];
+
+    this.logger.info('chatgptPage', { step: 'select_model', model, key, labels });
+
+    // ── Step 1: モデル選択ボタンを探す ─────────────────────────────────────
+    // まず複合セレクタで試み、マッチしない場合はモデル名 or "ChatGPT" テキストで探す
+    let selectorBtn = this.page.locator(SELECTORS.modelSelector).first();
+    if (!await selectorBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
+      const allModelNames = Object.values(MODEL_MAP).flat();
+      const namePattern = new RegExp([...allModelNames, 'ChatGPT'].join('|'), 'i');
+      selectorBtn = this.page.locator('button').filter({ hasText: namePattern })
+        .filter({ hasNot: this.page.locator('[data-trailing-button]') })
+        .first();
+    }
+    if (!await selectorBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
       throw new SelectorNotFoundError(SELECTORS.modelSelector, 'selectModel');
     }
-    await selector.click();
-    // Wait for model dropdown options to appear and click the matching one
-    await this.page.waitForTimeout(500);
-    const modelOption = this.page.getByText(model, { exact: false }).first();
-    const optionVisible = await modelOption.isVisible({ timeout: 5000 }).catch(() => false);
-    if (!optionVisible) {
-      throw new SelectorNotFoundError(`model option: ${model}`, 'selectModel');
+
+    // SVG アイコンが遮蔽するため force:true でクリック
+    await selectorBtn.click({ force: true });
+
+    // ── Step 2: モーダル（intelligence menu）の表示を待つ ─────────────────
+    const modal = this.page.locator('[data-testid="modal-intelligence-menu"]');
+    const modalOpened = await modal.waitFor({ state: 'visible', timeout: 5000 })
+      .then(() => true).catch(() => false);
+
+    await this.page.waitForTimeout(400);
+
+    // ── Step 3: モーダル内でモデルオプションを探してクリック ───────────────
+    // モーダルが開いていればその中、開いていなければ汎用メニューセレクタ内に絞る
+    const menuLocator = modalOpened
+      ? modal
+      : this.page.locator(SELECTORS.modelMenu).first();
+    const searchScope = (await menuLocator.isVisible({ timeout: 500 }).catch(() => false))
+      ? menuLocator
+      : this.page;
+
+    let clicked = false;
+    for (const label of labels) {
+      const option = searchScope.getByText(label, { exact: false }).first();
+      if (await option.isVisible({ timeout: 1500 }).catch(() => false)) {
+        await option.click();
+        clicked = true;
+        this.logger.info('chatgptPage', { step: 'model_selected', model, matchedLabel: label });
+        break;
+      }
     }
-    await modelOption.click();
-    this.logger.info('chatgptPage', { step: 'model_selected', model });
+
+    if (!clicked) {
+      await this.page.keyboard.press('Escape');
+      throw new SelectorNotFoundError(
+        `model options: ${labels.join(' / ')}`,
+        'selectModel: none of the candidate labels found in modal',
+      );
+    }
+
+    // モーダルが閉じるまで待つ
+    await modal.waitFor({ state: 'hidden', timeout: 3000 }).catch(() => {});
+    await this.page.waitForTimeout(300);
   }
 
   async sendPrompt(text: string): Promise<void> {
