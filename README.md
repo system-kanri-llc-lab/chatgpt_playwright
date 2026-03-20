@@ -2,7 +2,7 @@
 
 ChatGPT Pro の Web UI を Playwright 経由で操作し、テキストの送信・応答取得を自動化する CLI ツール。
 
-AIエージェント（Claude Code / Gemini CLI など）から呼び出すことを前提に設計されており、通常フローは決定論的スクリプトで処理し、エラー発生時のみ Gemini CLI にスクリーンショットベースのリカバリを委譲する。
+AIエージェント（Claude Code / Gemini CLI など）から呼び出すことを前提に設計されており、通常フローは決定論的スクリプトで処理し、セレクタエラー発生時のみ Gemini CLI に自動でリカバリを委譲する。
 
 ---
 
@@ -40,6 +40,8 @@ chatgpt-brain/
 ├── Dockerfile                  # マルチステージビルド（deps + runtime）
 ├── docker/
 │   └── entrypoint.sh           # コンテナ内タスク実行スクリプト
+├── prompts/
+│   └── gemini-selector-fix.md  # Gemini CLI へのセレクタ修正プロンプトテンプレート
 ├── scripts/
 │   ├── orchestrate.sh          # 単発エフェメラル実行
 │   ├── run-parallel.sh         # 並列実行（CPU×2 上限）
@@ -49,7 +51,8 @@ chatgpt-brain/
 │   ├── server.ts               # HTTP API サーバー（オプション）
 │   ├── browser-manager.ts      # ブラウザライフサイクル管理
 │   ├── pages/
-│   │   └── chatgpt-page.ts     # Page Object Model（セレクタ一元管理）
+│   │   ├── chatgpt-page.ts     # Page Object Model（プロンプト送信・応答取得）
+│   │   └── model-selector.ts   # モデル選択 UI 操作（Gemini 自己修復対象）
 │   ├── actions/
 │   │   ├── send-prompt.ts      # プロンプト送信フロー
 │   │   └── get-response.ts     # 応答取得
@@ -57,12 +60,12 @@ chatgpt-brain/
 │   │   ├── error-types.ts      # エラー型定義
 │   │   └── error-classifier.ts # エラー分類・exit code マッピング
 │   ├── recovery/
-│   │   └── gemini-fallback.ts  # Gemini CLI 委譲コンテキスト生成
+│   │   └── gemini-fallback.ts  # Gemini CLI 自動起動ロジック
 │   └── utils/
 │       ├── config.ts           # 設定管理
 │       ├── logger.ts           # 構造化 JSON ログ
-│       └── screenshot.ts       # スクリーンショット保存
-└── SKILL.md                    # Gemini CLI リカバリスキル定義
+│       └── screenshot.ts       # スクリーンショット + HTML ペア保存
+└── SKILL.md                    # エージェント向けスキル定義
 ```
 
 ---
@@ -97,18 +100,27 @@ npx tsx src/cli.ts session start
 ### プロンプト送信
 
 ```bash
-# 基本
+# 基本（デフォルトモデル: thinking）
 npx tsx src/cli.ts send --prompt "質問テキスト"
 
 # stdin から読み込み
 echo "質問テキスト" | npx tsx src/cli.ts send --prompt -
 
 # モデル・タイムアウト指定
-npx tsx src/cli.ts send --prompt "質問" --model "o3-pro" --timeout 600
+npx tsx src/cli.ts send --prompt "質問" --model pro --timeout 600
 
 # 既存チャットに続きを送信
 npx tsx src/cli.ts send --prompt "続きの質問" --conversation-url "https://chatgpt.com/c/xxxx"
 ```
+
+**モデル指定値:**
+
+| 値 | 対応モデル |
+|----|------------|
+| `instant` | GPT-4o mini（高速・低コスト） |
+| `thinking` | o3（デフォルト） |
+| `pro` | o3 Pro |
+| `deepresearch` | Deep Research（コンポーザーの + ボタン経由） |
 
 **成功時の出力（stdout）:**
 
@@ -117,7 +129,7 @@ npx tsx src/cli.ts send --prompt "続きの質問" --conversation-url "https://c
   "status": "success",
   "response": "ChatGPT の応答テキスト全文",
   "conversation_url": "https://chatgpt.com/c/xxxx",
-  "model": "o3-pro",
+  "model": "thinking",
   "elapsed_seconds": 45.2
 }
 ```
@@ -130,11 +142,13 @@ npx tsx src/cli.ts send --prompt "続きの質問" --conversation-url "https://c
   "error_type": "selector_not_found",
   "message": "エラー詳細",
   "screenshot_path": "/path/to/screenshots/error-20260319-143022.png",
-  "recovery_attempted": false,
+  "html_path": "/path/to/screenshots/error-20260319-143022.html",
+  "recovery_attempted": true,
   "context": {
     "page_url": "https://chatgpt.com/...",
     "page_title": "...",
-    "failed_selector": "..."
+    "failed_selector": "...",
+    "selector_file": "/path/to/src/pages/model-selector.ts"
   }
 }
 ```
@@ -152,7 +166,7 @@ npx tsx src/cli.ts session stop     # ブラウザ終了
 | Code | 意味 | 対応 |
 |------|------|------|
 | `0` | 成功 | 結果を利用 |
-| `1` | セレクタ不在（UI変更の可能性） | Gemini CLI に委譲 |
+| `1` | セレクタ不在（UI変更の可能性） | Gemini CLI が自動起動してリカバリ提案 |
 | `2` | タイムアウト | リトライまたは Gemini CLI に委譲 |
 | `3` | 認証切れ / CAPTCHA | 人間に通知 |
 | `4` | 予期しないページ遷移 | Gemini CLI に委譲 |
@@ -226,7 +240,7 @@ MAX_PARALLEL=4 ./scripts/run-parallel.sh < prompts.txt
 | `CHATGPT_AUTH_VOLUME` | `chatgpt-auth` | ログイン情報を保持する volume 名 |
 | `MAX_PARALLEL` | `CPU×2` | 最大同時実行数 |
 | `OUTPUT_BASE` | `./output` | 成果物の出力先ディレクトリ |
-| `MODEL` | （ChatGPT デフォルト） | 使用モデル |
+| `MODEL` | `thinking` | 使用モデル |
 | `TIMEOUT` | `300` | レスポンスタイムアウト（秒） |
 
 ### コンテナの命名規則
@@ -294,24 +308,31 @@ curl -X POST http://localhost:3001/send \
 
 ---
 
-## Gemini CLI との連携
+## Gemini CLI 自動リカバリ
 
-エラー発生時、呼び出し元スクリプトが Gemini CLI にリカバリを委譲できる。
-`SKILL.md` に Gemini CLI 用のスキル定義が記載されている。
+セレクタエラー（exit code 1）が発生した場合、chatgpt-brain は以下を自動実行する:
 
-```bash
-# 統合スクリプト例
-RESULT=$(npx tsx src/cli.ts send --prompt "$PROMPT")
-EXIT_CODE=$?
+1. エラー時の **PNG スクリーンショット** と **HTML ソース** をペアで保存
+2. `src/pages/model-selector.ts` を `.bak` としてバックアップ
+3. **Gemini CLI を自動起動** し、PNG・HTML・セレクタファイルを渡して修正提案を取得
+4. 提案内容を stderr に出力（`recovery_attempted: true`）
 
-if [ $EXIT_CODE -eq 1 ] || [ $EXIT_CODE -eq 4 ]; then
-  SCREENSHOT=$(echo "$RESULT" | jq -r '.screenshot_path')
-  gemini -skill chatgpt-brain-recovery \
-    --context "$RESULT" \
-    --image "$SCREENSHOT" \
-    --prompt "リカバリしてください。送信プロンプト: $PROMPT"
-fi
 ```
+[recovery] セレクタエラーを検出。Gemini CLI に修正を依頼します...
+  screenshot : ~/.chatgpt-brain/screenshots/error-20260321-143022.png
+  html       : ~/.chatgpt-brain/screenshots/error-20260321-143022.html
+  selector   : /path/to/src/pages/model-selector.ts
+
+[recovery] Gemini の修正提案:
+────────────────────────────────────────────────────────────
+### 変更理由
+（Gemini の出力）
+### 修正後のコード
+...
+────────────────────────────────────────────────────────────
+```
+
+Gemini が出力したコードを `src/pages/model-selector.ts` に適用することで、人手を介さずセレクタを復旧できる。
 
 ---
 
@@ -319,15 +340,24 @@ fi
 
 ### セレクタが壊れた場合
 
-ChatGPT の UI 変更によりセレクタが機能しなくなった場合は `src/pages/chatgpt-page.ts` 冒頭の `SELECTORS` 定数のみ修正する。
+ChatGPT の UI 変更によりモデル選択が失敗した場合は `src/pages/model-selector.ts` の定数のみ修正する（ロジックは変更不要）。
 
 ```typescript
-const SELECTORS = {
-  promptTextarea: '[data-testid="composer-input"], #prompt-textarea',
-  sendButton: '[data-testid="send-button"]',
-  // ...
+export const MODEL_SELECTORS = {
+  triggerButton: '[aria-label="モデルセレクター"], ...',
+  modal: '[data-testid="modal-intelligence-menu"]',
+  composerPlusButton: '[data-testid="composer-plus-btn"], ...',
 } as const;
+
+export const MODEL_MAP: Record<string, string[]> = {
+  instant:      ['Instant', '4o mini', 'GPT-4o mini'],
+  thinking:     ['Thinking', 'o3-mini', 'o1'],
+  pro:          ['Pro', 'o3 pro', 'o3-pro'],
+  deepresearch: ['Deep research', 'DeepResearch', 'ディープリサーチ'],
+};
 ```
+
+セレクタエラー時は Gemini CLI が自動起動し、このファイルの修正案を提示する。
 
 ### 応答完了が検知されない場合
 

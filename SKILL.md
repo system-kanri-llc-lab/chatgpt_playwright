@@ -1,12 +1,12 @@
 # chatgpt-brain Skill Definition
 
-This file defines the Gemini CLI skill interface for the `chatgpt-brain` tool.
+This file defines the skill interface for the `chatgpt-brain` tool, intended for use by AI agents (Claude Code, Gemini CLI, etc.).
 
 ## Skill Metadata
 
 ```yaml
 name: chatgpt-brain
-version: 1.0.0
+version: 1.1.0
 description: Automate ChatGPT Web UI via Playwright to send prompts and retrieve responses
 ```
 
@@ -33,10 +33,20 @@ Send a prompt to ChatGPT and get the response as JSON.
 | Option | Type | Description |
 |--------|------|-------------|
 | `--prompt <text>` | string | The prompt to send. Use `"-"` to read from stdin |
-| `--model <model>` | string | Model to use (e.g. `o3-pro`, `gpt-4o`) |
+| `--model <model>` | string | Model: `instant` / `thinking` (default) / `pro` / `deepresearch` |
 | `--timeout <seconds>` | number | Response timeout in seconds (default: 300) |
 | `--no-new-chat` | flag | Reuse the existing chat instead of starting a new one |
 | `--conversation-url <url>` | string | Open a specific conversation URL |
+| `--server-url <url>` | string | Delegate to a running chatgpt-brain HTTP server |
+
+**Model values:**
+
+| Value | ChatGPT model |
+|-------|---------------|
+| `instant` | GPT-4o mini (fast, low cost) |
+| `thinking` | o3 (default) |
+| `pro` | o3 Pro |
+| `deepresearch` | Deep Research (selected via composer + button) |
 
 **Success output (stdout):**
 
@@ -45,7 +55,7 @@ Send a prompt to ChatGPT and get the response as JSON.
   "status": "success",
   "response": "The full text response from ChatGPT",
   "conversation_url": "https://chatgpt.com/c/xxxx",
-  "model": "o3-pro",
+  "model": "thinking",
   "elapsed_seconds": 45.2
 }
 ```
@@ -57,12 +67,14 @@ Send a prompt to ChatGPT and get the response as JSON.
   "status": "error",
   "error_type": "selector_not_found",
   "message": "Selector not found: ...",
-  "screenshot_path": "/path/to/error-screenshot.png",
-  "recovery_attempted": false,
+  "screenshot_path": "/path/to/error-20260321-143022.png",
+  "html_path": "/path/to/error-20260321-143022.html",
+  "recovery_attempted": true,
   "context": {
     "page_url": "https://chatgpt.com/...",
     "page_title": "ChatGPT",
-    "failed_selector": "[data-testid=\"composer-input\"]"
+    "failed_selector": "[data-testid=\"model-switcher-dropdown-button\"]",
+    "selector_file": "/path/to/src/pages/model-selector.ts"
   }
 }
 ```
@@ -101,14 +113,43 @@ chatgpt-brain health
 
 ## Exit Codes
 
-| Code | Meaning |
-|------|---------|
-| 0 | Success |
-| 1 | Selector not found (UI may have changed) |
-| 2 | Response timeout |
-| 3 | Authentication expired or CAPTCHA detected |
-| 4 | Unexpected page navigation |
-| 5 | Unknown error |
+| Code | Meaning | Action |
+|------|---------|--------|
+| 0 | Success | Use the result |
+| 1 | Selector not found (UI may have changed) | Gemini CLI auto-invoked for recovery |
+| 2 | Response timeout | Retry or escalate |
+| 3 | Authentication expired or CAPTCHA detected | Notify human |
+| 4 | Unexpected page navigation | Escalate |
+| 5 | Unknown error | Check logs |
+
+## Gemini CLI Auto-Recovery
+
+When exit code 1 (`selector_not_found`) occurs, `chatgpt-brain` automatically:
+
+1. Saves a **PNG screenshot** and **HTML source** as a pair
+2. Backs up `src/pages/model-selector.ts` as `.bak`
+3. Invokes **Gemini CLI** with `--image screenshot.png` and a repair prompt via stdin
+4. Prints Gemini's fix suggestion to stderr (`recovery_attempted: true` in JSON output)
+
+The repair prompt template is at `prompts/gemini-selector-fix.md`. Gemini is instructed to output the full corrected `model-selector.ts` so the agent can apply it directly.
+
+**stderr during recovery:**
+```
+[recovery] セレクタエラーを検出。Gemini CLI に修正を依頼します...
+  screenshot : ~/.chatgpt-brain/screenshots/error-20260321-143022.png
+  html       : ~/.chatgpt-brain/screenshots/error-20260321-143022.html
+  selector   : /path/to/src/pages/model-selector.ts
+
+[recovery] Gemini の修正提案:
+────────────────────────────────────────────────────────────
+### 変更理由
+...
+### 修正後のコード
+```typescript
+...
+```
+────────────────────────────────────────────────────────────
+```
 
 ## Configuration
 
@@ -138,63 +179,20 @@ Config file: `~/.chatgpt-brain/config.json`
 }
 ```
 
-## Gemini CLI Integration
-
-When `chatgpt-brain` fails with a non-zero exit code, the shell wrapper can
-delegate to Gemini CLI using the error context:
+## Calling from a Shell Script
 
 ```bash
 #!/bin/bash
-# Example wrapper script
-
 RESULT=$(chatgpt-brain send --prompt "$PROMPT" 2>/dev/null)
 EXIT_CODE=$?
 
-if [ $EXIT_CODE -ne 0 ]; then
-  ERROR_TYPE=$(echo "$RESULT" | jq -r '.error_type')
-  MESSAGE=$(echo "$RESULT" | jq -r '.message')
-  SCREENSHOT=$(echo "$RESULT" | jq -r '.screenshot_path // ""')
-
-  # Build context for Gemini fallback
-  CONTEXT="ChatGPT automation failed.
-Error type: $ERROR_TYPE
-Message: $MESSAGE
-Screenshot: $SCREENSHOT
-
-Please answer the following prompt directly:
-$PROMPT"
-
-  # Delegate to Gemini CLI
-  echo "$CONTEXT" | gemini
-else
+if [ $EXIT_CODE -eq 0 ]; then
   echo "$RESULT" | jq -r '.response'
+else
+  # error details (including Gemini recovery output if recovery_attempted=true)
+  echo "$RESULT" | jq .
+  exit $EXIT_CODE
 fi
 ```
 
-## Recovery Context Format
-
-The `buildGeminiContext(error, prompt)` function from `src/recovery/gemini-fallback.ts`
-produces a structured context string for Gemini CLI delegation:
-
-```
-=== ChatGPT Brain Automation Error Context ===
-
-Error Type: selector_not_found
-Exit Code: 1
-Message: Selector not found: "[data-testid="composer-input"]"
-
-=== Original Error Details ===
-{
-  "name": "SelectorNotFoundError",
-  "message": "...",
-  "stack": "..."
-}
-
-=== Original Prompt ===
-<the original prompt text>
-
-=== Recovery Instructions ===
-The ChatGPT web automation failed. Please handle the following prompt directly:
-
-<the original prompt text>
-```
+For selector errors (exit code 1), Gemini recovery runs automatically during the `chatgpt-brain send` call. The corrected `model-selector.ts` content is printed to stderr and can be applied to restore functionality.
