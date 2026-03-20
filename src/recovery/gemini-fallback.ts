@@ -67,6 +67,17 @@ export interface GeminiRecoveryInput {
   errorJson: object;
 }
 
+/**
+ * Gemini の出力から TypeScript コードブロックを抽出し、セレクタファイルに上書きする。
+ * コードブロックが見つからなかった場合は false を返す。
+ */
+export function applyGeminiFix(geminiOutput: string, selectorFilePath: string): boolean {
+  const match = geminiOutput.match(/```typescript\s*\n([\s\S]*?)\n```/);
+  if (!match) return false;
+  fs.writeFileSync(selectorFilePath, match[1], 'utf-8');
+  return true;
+}
+
 export interface GeminiRecoveryResult {
   success: boolean;
   output: string;

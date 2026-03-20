@@ -1,6 +1,7 @@
 #!/usr/bin/env tsx
 import { Command } from 'commander';
 import * as readline from 'readline';
+import { spawn } from 'child_process';
 import { sendPromptAction } from './actions/send-prompt.js';
 import { BrowserManager } from './browser-manager.js';
 import { ChatGPTPage } from './pages/chatgpt-page.js';
@@ -8,7 +9,12 @@ import { classifyError } from './errors/error-classifier.js';
 import { captureError } from './utils/screenshot.js';
 import { loadConfig } from './utils/config.js';
 import { Logger } from './utils/logger.js';
-import { invokeGeminiRecovery } from './recovery/gemini-fallback.js';
+import { invokeGeminiRecovery, applyGeminiFix } from './recovery/gemini-fallback.js';
+
+/** セレクタエラー時の最大自動リトライ回数 */
+const MAX_SELECTOR_RETRIES = 4;
+/** 現在のリトライ回数（子プロセス経由で引き継ぐ） */
+const selectorRetryAttempt = parseInt(process.env.CHATGPT_BRAIN_SELECTOR_RETRY ?? '0', 10);
 
 const program = new Command();
 
@@ -133,7 +139,8 @@ program
         screenshotPath && htmlPath && selectorFile
       ) {
         process.stderr.write(
-          `[recovery] セレクタエラーを検出。Gemini CLI に修正を依頼します...\n` +
+          `[recovery] セレクタエラーを検出。Gemini CLI に修正を依頼します... ` +
+          `(試行 ${selectorRetryAttempt + 1}/${MAX_SELECTOR_RETRIES})\n` +
           `  screenshot : ${screenshotPath}\n` +
           `  html       : ${htmlPath}\n` +
           `  selector   : ${selectorFile}\n`,
@@ -150,7 +157,22 @@ program
           process.stderr.write('─'.repeat(60) + '\n');
           process.stderr.write(recovery.output + '\n');
           process.stderr.write('─'.repeat(60) + '\n');
-          if (!recovery.success) {
+
+          if (recovery.success) {
+            const applied = applyGeminiFix(recovery.output, selectorFile);
+            if (applied && selectorRetryAttempt < MAX_SELECTOR_RETRIES) {
+              process.stderr.write(
+                `[recovery] 修正を適用しました。リトライします ` +
+                `(${selectorRetryAttempt + 1}/${MAX_SELECTOR_RETRIES})...\n`,
+              );
+              try { await BrowserManager.getInstance().close(); } catch { /* ignore */ }
+              await spawnRetry(selectorRetryAttempt + 1);
+              return;
+            }
+            if (!applied) {
+              process.stderr.write('[recovery] Gemini の出力から TypeScript ブロックを抽出できませんでした。\n');
+            }
+          } else {
             process.stderr.write(`[recovery] Gemini 失敗: ${recovery.error}\n`);
           }
         } catch (recoveryError) {
@@ -331,6 +353,27 @@ async function delegateToServer(serverUrl: string, body: Record<string, unknown>
     process.stdout.write(JSON.stringify(errorOutput, null, 2) + '\n');
     process.exit(5);
   }
+}
+
+/**
+ * 同じ引数でプロセスを再起動し、セレクタの修正を反映させる。
+ * モジュールキャッシュをリセットするため子プロセスとして起動する。
+ * 子プロセスの終了コードでそのまま終了する。
+ */
+async function spawnRetry(retryCount: number): Promise<void> {
+  return new Promise((resolve) => {
+    const proc = spawn(process.argv[0], process.argv.slice(1), {
+      env: { ...process.env, CHATGPT_BRAIN_SELECTOR_RETRY: String(retryCount) },
+      stdio: 'inherit',
+    });
+    proc.on('error', (err) => {
+      process.stderr.write(`[recovery] retry spawn error: ${err.message}\n`);
+      process.exit(5);
+    });
+    proc.on('close', (code) => {
+      process.exit(code ?? 5);
+    });
+  });
 }
 
 async function readStdin(): Promise<string> {
