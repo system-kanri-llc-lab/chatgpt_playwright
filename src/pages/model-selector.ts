@@ -42,6 +42,19 @@ export const MODEL_SELECTORS = {
 
   /** モデル選択モーダル本体 */
   modal: '[data-testid="modal-intelligence-menu"]',
+
+  /**
+   * コンポーザー左の「+」ボタン。
+   * DeepResearch はヘッダードロップダウンに存在せず、ここからのみ選択可能。
+   *
+   * 実際の DOM（error-20260320-201943.html より確認）:
+   *   <button data-testid="composer-plus-btn" aria-label="ファイルの追加など" ...>
+   */
+  composerPlusButton: [
+    '[data-testid="composer-plus-btn"]',
+    '[aria-label="ファイルの追加など"]',
+    'button[id="composer-plus-btn"]',
+  ].join(', '),
 } as const;
 
 // ── モデル名マッピング（UI ラベルが変わったらここだけ直す） ─────────────────
@@ -69,6 +82,22 @@ export async function selectModel(page: Page, model: string): Promise<void> {
 
   logger.info('modelSelector', { step: 'start', model, key, labels });
 
+  if (key === 'deepresearch') {
+    await selectDeepResearch(page, labels, logger);
+  } else {
+    await selectViaHeaderDropdown(page, labels, logger);
+  }
+}
+
+/**
+ * Instant / Thinking / Pro:
+ * ヘッダーの「ChatGPT ▼」ボタン → モーダル内で選択
+ */
+async function selectViaHeaderDropdown(
+  page: Page,
+  labels: string[],
+  logger: Logger,
+): Promise<void> {
   // ── Step 1: トリガーボタンを探す ─────────────────────────────────────────
   let triggerBtn = page.locator(MODEL_SELECTORS.triggerButton).first();
 
@@ -113,7 +142,7 @@ export async function selectModel(page: Page, model: string): Promise<void> {
     if (await option.isVisible({ timeout: 1500 }).catch(() => false)) {
       await option.click();
       clicked = true;
-      logger.info('modelSelector', { step: 'selected', model, matchedLabel: label });
+      logger.info('modelSelector', { step: 'selected', matchedLabel: label });
       break;
     }
   }
@@ -127,7 +156,55 @@ export async function selectModel(page: Page, model: string): Promise<void> {
     );
   }
 
-  // モーダルが閉じるのを待つ
   await modal.waitFor({ state: 'hidden', timeout: 3000 }).catch(() => {});
+  await page.waitForTimeout(300);
+}
+
+/**
+ * DeepResearch のみ:
+ * コンポーザー左の「+」ボタン → メニュー内で選択
+ */
+async function selectDeepResearch(
+  page: Page,
+  labels: string[],
+  logger: Logger,
+): Promise<void> {
+  // ── Step 1: 「+」ボタンをクリック ────────────────────────────────────────
+  const plusBtn = page.locator(MODEL_SELECTORS.composerPlusButton).first();
+
+  if (!await plusBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
+    throw new SelectorNotFoundError(
+      MODEL_SELECTORS.composerPlusButton,
+      'composer plus button not found',
+      SELECTOR_FILE,
+    );
+  }
+
+  await plusBtn.click();
+  logger.debug('modelSelector', { step: 'plus_button_clicked' });
+
+  await page.waitForTimeout(400);
+
+  // ── Step 2: メニュー内で DeepResearch を選択 ──────────────────────────
+  let clicked = false;
+  for (const label of labels) {
+    const option = page.getByText(label, { exact: false }).first();
+    if (await option.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await option.click();
+      clicked = true;
+      logger.info('modelSelector', { step: 'selected', matchedLabel: label });
+      break;
+    }
+  }
+
+  if (!clicked) {
+    await page.keyboard.press('Escape');
+    throw new SelectorNotFoundError(
+      `DeepResearch options: ${labels.join(' / ')}`,
+      'not found in composer plus menu',
+      SELECTOR_FILE,
+    );
+  }
+
   await page.waitForTimeout(300);
 }

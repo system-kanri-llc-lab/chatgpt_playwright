@@ -5,7 +5,8 @@ import { loadConfig } from '../utils/config.js';
 import { Logger } from '../utils/logger.js';
 
 // MODEL_MAP / ModelName / selectModel の実装は model-selector.ts に集約
-export { MODEL_MAP, ModelName } from './model-selector.js';
+export { MODEL_MAP } from './model-selector.js';
+export type { ModelName } from './model-selector.js';
 
 const SELECTORS = {
   promptTextarea: '[data-testid="composer-input"], #prompt-textarea',
