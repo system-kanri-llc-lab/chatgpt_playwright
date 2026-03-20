@@ -1,0 +1,8 @@
+node_modules
+dist
+.git
+screenshots
+logs
+output
+*.md
+docker-compose.yml
