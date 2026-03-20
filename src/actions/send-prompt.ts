@@ -11,13 +11,22 @@ export interface SendPromptOptions {
   conversationUrl?: string;
 }
 
-export interface SendPromptResult {
-  status: 'success';
-  response: string;
-  conversation_url: string;
-  model: string | null;
-  elapsed_seconds: number;
-}
+export type SendPromptResult =
+  | {
+      status: 'success';
+      response: string;
+      conversation_url: string;
+      model: string | null;
+      elapsed_seconds: number;
+    }
+  | {
+      status: 'research_started';
+      conversation_url: string;
+      model: string | null;
+      elapsed_seconds: number;
+      message: string;
+      watch_hint: string;
+    };
 
 export async function sendPromptAction(options: SendPromptOptions): Promise<SendPromptResult> {
   const logger = new Logger();
@@ -67,6 +76,25 @@ export async function sendPromptAction(options: SendPromptOptions): Promise<Send
 
   // Step 8: Send prompt
   await chatgptPage.sendPrompt(prompt);
+
+  const isDeepResearch = (effectiveModel ?? '').toLowerCase().replace(/[^a-z]/g, '') === 'deepresearch';
+
+  if (isDeepResearch) {
+    // DeepResearch は完了まで数時間〜1日かかるため、会話 URL が確定したら即返す。
+    // 完了確認は `watch` コマンドで行う。
+    const conversationResultUrl = await chatgptPage.waitForConversationCreated(60_000)
+      ?? chatgptPage.getCurrentUrl();
+    const elapsed = (Date.now() - startTime) / 1000;
+    logger.info('sendPromptAction', { step: 'research_started', conversationUrl: conversationResultUrl });
+    return {
+      status: 'research_started',
+      conversation_url: conversationResultUrl,
+      model: effectiveModel ?? null,
+      elapsed_seconds: Math.round(elapsed * 10) / 10,
+      message: 'Deep Research を開始しました。完了後に watch コマンドで結果を取得してください。',
+      watch_hint: `npx tsx src/cli.ts watch --conversation-url "${conversationResultUrl}"`,
+    };
+  }
 
   // Step 9: Wait for response
   await chatgptPage.waitForResponse(effectiveTimeoutMs);

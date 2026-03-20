@@ -285,6 +285,79 @@ export class ChatGPTPage {
     this.logger.info('chatgptPage', { step: 'response_ready', messageLength: finalText.length });
   }
 
+  /**
+   * プロンプト送信後、URL が /c/xxxx 形式に変わるまで待つ。
+   * 変わったら会話 URL を返す。タイムアウト時は null。
+   */
+  async waitForConversationCreated(timeoutMs = 60_000): Promise<string | null> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const url = this.page.url();
+      if (url.includes('/c/')) return url;
+      await this.page.waitForTimeout(1000);
+    }
+    return null;
+  }
+
+  /**
+   * 既に開いている会話ページを一定間隔でポーリングし、
+   * アシスタントの応答が完成したら返す。
+   * DeepResearch のような長時間タスク向け。
+   *
+   * 完了条件（OR）:
+   *   - Stop ボタン不在 かつ アシスタントメッセージが minLength 文字以上
+   *   - 上記が STABLE_COUNT 回連続したら確定
+   */
+  async pollForCompletedResponse(
+    timeoutMs: number,
+    pollIntervalMs = 60_000,
+    minLength = 200,
+  ): Promise<string> {
+    const STABLE_COUNT = 2;
+    const deadline = Date.now() + timeoutMs;
+    let stableCount = 0;
+    let lastLength = -1;
+
+    this.logger.info('chatgptPage', { step: 'poll_for_completion', timeoutMs, pollIntervalMs });
+
+    while (Date.now() < deadline) {
+      await this.page.waitForTimeout(pollIntervalMs);
+
+      const [stopVisible, text] = await Promise.all([
+        this.page.locator(SELECTORS.streamingIndicator).first()
+          .isVisible({ timeout: 300 }).catch(() => false),
+        this.page.locator(SELECTORS.assistantMessage).last()
+          .textContent().catch(() => ''),
+      ]);
+
+      const length = (text ?? '').trim().length;
+      this.logger.debug('chatgptPage', { step: 'poll', stopVisible, length, stableCount });
+
+      if (!stopVisible && length >= minLength) {
+        if (length === lastLength) {
+          stableCount++;
+          if (stableCount >= STABLE_COUNT) break;
+        } else {
+          stableCount = 1;
+          lastLength = length;
+        }
+      } else {
+        stableCount = 0;
+        lastLength = length;
+      }
+    }
+
+    if (Date.now() >= deadline) {
+      throw new ResponseTimeoutError(timeoutMs, 'poll_for_completed_response');
+    }
+
+    const finalText = (await this.page.locator(SELECTORS.assistantMessage).last()
+      .textContent().catch(() => '') ?? '').trim();
+
+    this.logger.info('chatgptPage', { step: 'poll_complete', messageLength: finalText.length });
+    return finalText;
+  }
+
   async getLastResponse(): Promise<string> {
     this.logger.debug('chatgptPage', { step: 'get_last_response' });
     const messages = this.page.locator(SELECTORS.assistantMessage);

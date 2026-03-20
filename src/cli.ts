@@ -185,6 +185,77 @@ program
     }
   });
 
+// ── watch command ─────────────────────────────────────────────────────────────
+program
+  .command('watch')
+  .description('Poll a conversation URL until the response is complete (for Deep Research)')
+  .requiredOption('--conversation-url <url>', 'Conversation URL to poll')
+  .option('--poll-interval <seconds>', 'Polling interval in seconds', parseFloat)
+  .option('--timeout <seconds>', 'Maximum wait time in seconds (default: 86400 = 24h)', parseFloat)
+  .action(async (opts) => {
+    const logger = new Logger();
+    const config = loadConfig();
+    const pollIntervalMs = (opts.pollInterval ?? 300) * 1000;
+    const timeoutMs = (opts.timeout ?? 86400) * 1000;
+
+    logger.info('cli.watch', { step: 'start', conversationUrl: opts.conversationUrl, pollIntervalMs, timeoutMs });
+    process.stderr.write(
+      `[watch] ${opts.conversationUrl}\n` +
+      `[watch] 完了まで ${Math.round(pollIntervalMs / 1000)}秒ごとにポーリングします（最大 ${Math.round(timeoutMs / 3600_000)}時間）\n`,
+    );
+
+    const browserManager = BrowserManager.getInstance();
+
+    try {
+      await browserManager.launch();
+      const page = await browserManager.getPage();
+      const chatgptPage = new ChatGPTPage(page);
+
+      await chatgptPage.openConversation(opts.conversationUrl);
+      await chatgptPage.ensureAuthenticated();
+
+      const startTime = Date.now();
+      const response = await chatgptPage.pollForCompletedResponse(timeoutMs, pollIntervalMs);
+      const elapsed = (Date.now() - startTime) / 1000;
+
+      const result = {
+        status: 'success',
+        response,
+        conversation_url: chatgptPage.getCurrentUrl(),
+        model: 'deepresearch',
+        elapsed_seconds: Math.round(elapsed * 10) / 10,
+      };
+
+      process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+      process.exit(0);
+    } catch (error) {
+      const classified = classifyError(error);
+      logger.error('cli.watch', { error: classified });
+
+      let screenshotPath: string | null = null;
+      let htmlPath: string | null = null;
+      try {
+        if (browserManager.isRunning()) {
+          const page = await browserManager.getPage();
+          const capture = await captureError(page, config.screenshots.dir, 'watch-error', config.screenshots.maxFiles);
+          screenshotPath = capture.screenshotPath;
+          htmlPath = capture.htmlPath;
+        }
+      } catch { /* best-effort */ }
+
+      const result = {
+        status: 'error',
+        error_type: classified.errorType,
+        message: classified.message,
+        screenshot_path: screenshotPath,
+        html_path: htmlPath,
+        context: { conversation_url: opts.conversationUrl },
+      };
+      process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+      process.exit(classified.exitCode);
+    }
+  });
+
 // ── session commands ──────────────────────────────────────────────────────────
 const sessionCmd = program.command('session').description('Manage browser session');
 
