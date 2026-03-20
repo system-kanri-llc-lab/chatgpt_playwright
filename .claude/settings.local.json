@@ -3,7 +3,9 @@
     "allow": [
       "Bash(npx tsx:*)",
       "Bash(npx tsc:*)",
-      "Bash(chmod:*)"
+      "Bash(chmod:*)",
+      "Bash(ls -t ~/.chatgpt-brain/screenshots/*.html)",
+      "Bash(python3:*)"
     ]
   }
 }

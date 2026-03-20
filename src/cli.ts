@@ -8,6 +8,7 @@ import { classifyError } from './errors/error-classifier.js';
 import { captureError } from './utils/screenshot.js';
 import { loadConfig } from './utils/config.js';
 import { Logger } from './utils/logger.js';
+import { invokeGeminiRecovery } from './recovery/gemini-fallback.js';
 
 const program = new Command();
 
@@ -102,9 +103,13 @@ program
         // Best-effort capture
       }
 
-      // Extract failed selector from error if available
+      // Extract failed selector and selector file from error if available
+      let selectorFile: string | null = null;
       if (error instanceof Error && 'selector' in error) {
         failedSelector = (error as { selector: string }).selector;
+      }
+      if (error instanceof Error && 'selectorFile' in error) {
+        selectorFile = (error as { selectorFile?: string }).selectorFile ?? null;
       }
 
       const errorOutput = {
@@ -118,8 +123,40 @@ program
           page_url: pageUrl,
           page_title: pageTitle,
           failed_selector: failedSelector,
+          selector_file: selectorFile,
         },
       };
+
+      // セレクタエラー + PNG/HTML + selectorFile がすべて揃っている場合は Gemini を自動起動
+      if (
+        classified.errorType === 'selector_not_found' &&
+        screenshotPath && htmlPath && selectorFile
+      ) {
+        process.stderr.write(
+          `[recovery] セレクタエラーを検出。Gemini CLI に修正を依頼します...\n` +
+          `  screenshot : ${screenshotPath}\n` +
+          `  html       : ${htmlPath}\n` +
+          `  selector   : ${selectorFile}\n`,
+        );
+        try {
+          const recovery = await invokeGeminiRecovery({
+            screenshotPath,
+            htmlPath,
+            selectorFilePath: selectorFile,
+            errorJson: errorOutput,
+          });
+          errorOutput.recovery_attempted = true;
+          process.stderr.write('\n[recovery] Gemini の修正提案:\n');
+          process.stderr.write('─'.repeat(60) + '\n');
+          process.stderr.write(recovery.output + '\n');
+          process.stderr.write('─'.repeat(60) + '\n');
+          if (!recovery.success) {
+            process.stderr.write(`[recovery] Gemini 失敗: ${recovery.error}\n`);
+          }
+        } catch (recoveryError) {
+          process.stderr.write(`[recovery] Gemini 起動エラー: ${String(recoveryError)}\n`);
+        }
+      }
 
       process.stdout.write(JSON.stringify(errorOutput, null, 2) + '\n');
       process.exit(classified.exitCode);

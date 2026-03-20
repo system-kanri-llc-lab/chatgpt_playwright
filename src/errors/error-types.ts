@@ -1,12 +1,15 @@
 export class SelectorNotFoundError extends Error {
   public readonly selector: string;
   public readonly context: string;
+  /** 修正すべきセレクタファイルの絶対パス。Gemini CLI が参照する。 */
+  public readonly selectorFile?: string;
 
-  constructor(selector: string, context: string = '') {
+  constructor(selector: string, context: string = '', selectorFile?: string) {
     super(`Selector not found: "${selector}"${context ? ` (${context})` : ''}. UI may have changed.`);
     this.name = 'SelectorNotFoundError';
     this.selector = selector;
     this.context = context;
+    this.selectorFile = selectorFile;
   }
 }
 
