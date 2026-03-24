@@ -6,7 +6,7 @@ This file defines the skill interface for the `chatgpt-brain` tool, intended for
 
 ```yaml
 name: chatgpt-brain
-version: 1.1.0
+version: 1.2.0
 description: Automate ChatGPT Web UI via Playwright to send prompts and retrieve responses
 ```
 
@@ -37,7 +37,12 @@ Send a prompt to ChatGPT and get the response as JSON.
 | `--timeout <seconds>` | number | Response timeout in seconds (default: 300) |
 | `--no-new-chat` | flag | Reuse the existing chat instead of starting a new one |
 | `--conversation-url <url>` | string | Open a specific conversation URL |
+| `--project <id>` | string | Project slug to chat within (see below) |
 | `--server-url <url>` | string | Delegate to a running chatgpt-brain HTTP server |
+
+**`--project` value:** The slug segment from the project URL.
+`https://chatgpt.com/g/g-p-6951fdcf1b2c8191916bc565cc4197f2-yin-le-ahuri/project`
+→ pass `g-p-6951fdcf1b2c8191916bc565cc4197f2-yin-le-ahuri`
 
 **Model values:**
 
@@ -60,6 +65,19 @@ Send a prompt to ChatGPT and get the response as JSON.
 }
 ```
 
+**DeepResearch output (stdout) — returned immediately after submission:**
+
+```json
+{
+  "status": "research_started",
+  "conversation_url": "https://chatgpt.com/c/xxxx",
+  "model": "deepresearch",
+  "elapsed_seconds": 3.5,
+  "message": "Deep Research を開始しました。完了後に watch コマンドで結果を取得してください。",
+  "watch_hint": "npx tsx src/cli.ts watch --conversation-url \"https://chatgpt.com/c/xxxx\""
+}
+```
+
 **Error output (stdout):**
 
 ```json
@@ -78,6 +96,22 @@ Send a prompt to ChatGPT and get the response as JSON.
   }
 }
 ```
+
+### watch
+
+Poll a conversation URL until the Deep Research response is complete.
+
+```bash
+chatgpt-brain watch --conversation-url <url> [--poll-interval <seconds>] [--timeout <seconds>]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--conversation-url <url>` | required | Conversation URL returned by `send --model deepresearch` |
+| `--poll-interval <seconds>` | `300` | How often to check (seconds) |
+| `--timeout <seconds>` | `86400` | Maximum wait time (default: 24h) |
+
+Returns the same `status: success` JSON as a normal `send` when complete.
 
 ### session start
 
@@ -186,12 +220,20 @@ Config file: `~/.chatgpt-brain/config.json`
 RESULT=$(chatgpt-brain send --prompt "$PROMPT" 2>/dev/null)
 EXIT_CODE=$?
 
-if [ $EXIT_CODE -eq 0 ]; then
-  echo "$RESULT" | jq -r '.response'
-else
-  # error details (including Gemini recovery output if recovery_attempted=true)
+if [ $EXIT_CODE -ne 0 ]; then
   echo "$RESULT" | jq .
   exit $EXIT_CODE
+fi
+
+STATUS=$(echo "$RESULT" | jq -r '.status')
+
+if [ "$STATUS" = "success" ]; then
+  echo "$RESULT" | jq -r '.response'
+elif [ "$STATUS" = "research_started" ]; then
+  CONV_URL=$(echo "$RESULT" | jq -r '.conversation_url')
+  echo "[DeepResearch started] $CONV_URL" >&2
+  # 完了を待つ場合:
+  chatgpt-brain watch --conversation-url "$CONV_URL" | jq -r '.response'
 fi
 ```
 

@@ -109,9 +109,16 @@ echo "質問テキスト" | npx tsx src/cli.ts send --prompt -
 # モデル・タイムアウト指定
 npx tsx src/cli.ts send --prompt "質問" --model pro --timeout 600
 
+# 特定プロジェクト内でチャット
+npx tsx src/cli.ts send --prompt "質問" --project g-p-6951fdcf1b2c8191916bc565cc4197f2-yin-le-ahuri
+
 # 既存チャットに続きを送信
 npx tsx src/cli.ts send --prompt "続きの質問" --conversation-url "https://chatgpt.com/c/xxxx"
 ```
+
+**`--project` の値**: ChatGPT プロジェクト URL のスラッグ部分。
+`https://chatgpt.com/g/g-p-6951fdcf1b2c8191916bc565cc4197f2-yin-le-ahuri/project` の場合は
+`g-p-6951fdcf1b2c8191916bc565cc4197f2-yin-le-ahuri` を渡す。
 
 **モデル指定値:**
 
@@ -134,6 +141,19 @@ npx tsx src/cli.ts send --prompt "続きの質問" --conversation-url "https://c
 }
 ```
 
+**DeepResearch 送信時の出力（stdout）:**
+
+```json
+{
+  "status": "research_started",
+  "conversation_url": "https://chatgpt.com/c/xxxx",
+  "model": "deepresearch",
+  "elapsed_seconds": 3.5,
+  "message": "Deep Research を開始しました。完了後に watch コマンドで結果を取得してください。",
+  "watch_hint": "npx tsx src/cli.ts watch --conversation-url \"https://chatgpt.com/c/xxxx\""
+}
+```
+
 **エラー時の出力（stdout）:**
 
 ```json
@@ -152,6 +172,22 @@ npx tsx src/cli.ts send --prompt "続きの質問" --conversation-url "https://c
   }
 }
 ```
+
+### DeepResearch の完了確認
+
+DeepResearch は完了まで数時間〜1日かかるため、`send` は即座に `research_started` を返す。
+完了確認は `watch` コマンドで行う:
+
+```bash
+# 5分おきにポーリング（デフォルト）、最大24時間待機
+npx tsx src/cli.ts watch --conversation-url "https://chatgpt.com/c/xxxx"
+
+# ポーリング間隔・タイムアウトを変更
+npx tsx src/cli.ts watch --conversation-url "https://chatgpt.com/c/xxxx" \
+  --poll-interval 600 --timeout 172800
+```
+
+完了時は通常の `status: success` JSON を返す。
 
 ### その他のコマンド
 

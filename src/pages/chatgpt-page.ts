@@ -43,6 +43,29 @@ export class ChatGPTPage {
     this.logger.info('chatgptPage', { step: 'navigate_done', url: this.page.url() });
   }
 
+  /**
+   * ChatGPT プロジェクトページへナビゲートする。
+   * URL 形式: {baseUrl}/g/{projectId}/project
+   * projectId 例: g-p-6951fdcf1b2c8191916bc565cc4197f2-yin-le-ahuri
+   */
+  async navigateToProject(projectId: string): Promise<void> {
+    const url = `${this.baseUrl}/g/${projectId}/project`;
+    this.logger.info('chatgptPage', { step: 'navigate_project', url });
+    await this.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await this.page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    this.logger.info('chatgptPage', { step: 'navigate_project_done', url: this.page.url() });
+  }
+
+  /**
+   * プロジェクト内で新規チャットを開始する。
+   * プロジェクトページに戻ることで新規チャット状態になる（/project URL へ再ナビゲート）。
+   */
+  async startNewChatInProject(projectId: string): Promise<void> {
+    this.logger.info('chatgptPage', { step: 'start_new_chat_in_project', projectId });
+    // プロジェクトの /project ページへ戻ることで新規チャット状態になる
+    await this.navigateToProject(projectId);
+  }
+
   async ensureAuthenticated(): Promise<void> {
     this.logger.debug('chatgptPage', { step: 'ensure_authenticated' });
     const loginVisible = await this.page.locator(SELECTORS.loginIndicator).first().isVisible({ timeout: 3000 }).catch(() => false);

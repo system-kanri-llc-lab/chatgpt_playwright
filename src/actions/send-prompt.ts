@@ -9,6 +9,8 @@ export interface SendPromptOptions {
   timeoutMs?: number;
   newChat?: boolean;
   conversationUrl?: string;
+  /** プロジェクトスラッグ（例: g-p-6951fdcf1b2c8191916bc565cc4197f2-yin-le-ahuri） */
+  projectId?: string;
 }
 
 export type SendPromptResult =
@@ -39,6 +41,7 @@ export async function sendPromptAction(options: SendPromptOptions): Promise<Send
     timeoutMs,
     newChat = true,
     conversationUrl,
+    projectId,
   } = options;
 
   const effectiveTimeoutMs = timeoutMs ?? config.chatgpt.responseTimeoutSeconds * 1000;
@@ -54,8 +57,12 @@ export async function sendPromptAction(options: SendPromptOptions): Promise<Send
   const page = await browserManager.getPage();
   const chatgptPage = new ChatGPTPage(page);
 
-  // Step 3: Navigate
-  await chatgptPage.navigate();
+  // Step 3: Navigate（プロジェクト指定時はプロジェクトページへ）
+  if (projectId) {
+    await chatgptPage.navigateToProject(projectId);
+  } else {
+    await chatgptPage.navigate();
+  }
 
   // Step 4: ensureAuthenticated
   await chatgptPage.ensureAuthenticated();
@@ -66,6 +73,9 @@ export async function sendPromptAction(options: SendPromptOptions): Promise<Send
   // Step 6: new chat or conversation
   if (conversationUrl) {
     await chatgptPage.openConversation(conversationUrl);
+  } else if (newChat && projectId) {
+    // プロジェクト内の新規チャット: /project URL へ再ナビゲートで新規状態に
+    await chatgptPage.startNewChatInProject(projectId);
   } else if (newChat) {
     await chatgptPage.startNewChat();
   }

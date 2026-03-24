@@ -32,6 +32,7 @@ program
   .option('-t, --timeout <seconds>', 'Response timeout in seconds', parseFloat)
   .option('--no-new-chat', 'Do not start a new chat (reuse existing)')
   .option('--conversation-url <url>', 'Open a specific conversation URL')
+  .option('--project <id>', 'Project slug to chat within (e.g. g-p-6951fdcf1b2c8191916bc565cc4197f2-yin-le-ahuri)')
   .option('--server-url <url>', 'Delegate to a running chatgpt-brain server (e.g. http://localhost:3001)')
   .action(async (opts) => {
     const logger = new Logger();
@@ -69,6 +70,7 @@ program
         timeout: opts.timeout ?? config.chatgpt.responseTimeoutSeconds,
         new_chat: opts.newChat !== false,
         conversation_url: opts.conversationUrl,
+        project_id: opts.project,
       });
       return;
     }
@@ -80,6 +82,7 @@ program
         timeoutMs,
         newChat: opts.newChat !== false,
         conversationUrl: opts.conversationUrl,
+        projectId: opts.project,
       });
 
       process.stdout.write(JSON.stringify(result, null, 2) + '\n');
